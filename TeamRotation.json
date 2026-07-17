@@ -1,6 +1,6 @@
 {
   "Bag/Bed Deletion Radius (from TC)": 50.0,
-  "Enable Debug Logging": true,
+  "Enable Debug Logging": false,
   "Require Permission": true,
   "Feature Toggles": {
     "De-authorize from Tool Cupboards": true,

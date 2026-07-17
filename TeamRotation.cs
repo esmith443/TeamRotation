@@ -20,6 +20,7 @@ namespace Oxide.Plugins
         private const string PermissionUse = "teamrotation.use";
         private const string PermissionAdmin = "teamrotation.admin";
         private const string UIMainName = "TeamRotationUI";
+        private const float MaxRotateDistance = 10f;
         private readonly HashSet<ulong> _processingPlayers = new HashSet<ulong>();
         private readonly List<BuildingPrivlidge> _cupboardsCache = new List<BuildingPrivlidge>();
         private readonly List<BaseEntity> _entitiesCache = new List<BaseEntity>();
@@ -27,8 +28,6 @@ namespace Oxide.Plugins
         private readonly List<SleepingBag> _bagsCache = new List<SleepingBag>();
         private static FieldInfo _codeLockWhitelistField;
         private static FieldInfo _codeLockGuestlistField;
-        private static FieldInfo _keyLockCodeField;
-        private static FieldInfo _keyLockFirstKeyField;
         private RotatedPlayersData _rotatedData;
         private readonly Dictionary<string, DateTime> _lastWebhookTime = new Dictionary<string, DateTime>();
 
@@ -174,11 +173,26 @@ namespace Oxide.Plugins
             try
             {
                 _config = Config.ReadObject<PluginConfig>();
-                if (_config == null) LoadDefaultConfig();
+                if (_config == null)
+                {
+                    LoadDefaultConfig();
+                }
+                else
+                {
+                    if (_config.Messages == null)
+                        _config.Messages = new Dictionary<string, string>();
+
+                    foreach (var message in GetDefaultMessages())
+                    {
+                        if (!_config.Messages.ContainsKey(message.Key))
+                            _config.Messages[message.Key] = message.Value;
+                    }
+                }
                 SaveConfig();
             }
-            catch
+            catch (Exception ex)
             {
+                PrintWarning($"Configuration file is invalid, loading defaults: {ex.Message}");
                 LoadDefaultConfig();
             }
         }
@@ -186,7 +200,12 @@ namespace Oxide.Plugins
         protected override void LoadDefaultConfig()
         {
             _config = new PluginConfig();
-            _config.Messages = new Dictionary<string, string>
+            _config.Messages = GetDefaultMessages();
+        }
+
+        private static Dictionary<string, string> GetDefaultMessages()
+        {
+            return new Dictionary<string, string>
             {
                 ["NoPermission"] = "You don't have permission to use this feature.",
                 ["NotTeamLeader"] = "Only the team leader can rotate players.",
@@ -194,8 +213,8 @@ namespace Oxide.Plugins
                 ["NoOfflinePlayers"] = "There are no offline players in your team to rotate.",
                 ["RotationStarted"] = "Rotating {0} offline player(s) from your team...",
                 ["RotationComplete"] = "Rotation complete! Kicked {5} player(s) from team. De-authorized from {1} TC(s), {2} lock(s), {3} turret(s). Deleted {4} bag(s)/bed(s).",
-                ["ProcessingError"] = "An error occurred. Please try again.",
-                ["AlreadyProcessing"] = "A rotation is already in progress.",
+                ["ProcessingError"] = "An error occurred while processing rotation. Please try again.",
+                ["AlreadyProcessing"] = "A rotation is already in progress. Please wait.",
                 ["ButtonText"] = "Rotate Players",
                 ["BannedFromTeam"] = "You have been rotated from this team and cannot authorize to their entities until wipe.",
                 ["BannedFromTeamRejoin"] = "You have been rotated from this team and cannot rejoin until server wipe."
@@ -208,7 +227,7 @@ namespace Oxide.Plugins
 
         #region Discord Webhook
 
-        private void SendDiscordWebhook(string title, string description, List<Dictionary<string, string>> fields, int color)
+        private void SendDiscordWebhook(string title, string description, List<Dictionary<string, object>> fields, int color)
         {
             if (string.IsNullOrEmpty(_config.Discord.WebhookUrl)) return;
 
@@ -264,13 +283,13 @@ namespace Oxide.Plugins
 
             _lastWebhookTime[cooldownKey] = DateTime.UtcNow;
 
-            var fields = new List<Dictionary<string, string>>
+            var fields = new List<Dictionary<string, object>>
             {
-                new Dictionary<string, string>
+                new Dictionary<string, object>
                 {
                     ["name"] = "Team Leader",
                     ["value"] = $"{teamLeader.displayName} ({teamLeader.UserIDString})",
-                    ["inline"] = "false"
+                    ["inline"] = false
                 }
             };
 
@@ -281,35 +300,37 @@ namespace Oxide.Plugins
                 rotatedPlayersText += $"• {playerName} ({playerId})\n";
             }
 
-            fields.Add(new Dictionary<string, string>
+            fields.Add(new Dictionary<string, object>
             {
                 ["name"] = $"Rotated Players ({rotatedPlayers.Count})",
                 ["value"] = string.IsNullOrEmpty(rotatedPlayersText) ? "None" : rotatedPlayersText,
-                ["inline"] = "false"
+                ["inline"] = false
             });
 
             string remainingPlayersText = "";
+            int remainingCount = 0;
             foreach (var memberID in team.members)
             {
                 if (!rotatedPlayers.Contains(memberID))
                 {
+                    remainingCount++;
                     var memberName = covalence.Players.FindPlayerById(memberID.ToString())?.Name ?? memberID.ToString();
                     remainingPlayersText += $"• {memberName} ({memberID})\n";
                 }
             }
 
-            fields.Add(new Dictionary<string, string>
+            fields.Add(new Dictionary<string, object>
             {
-                ["name"] = $"Remaining Team Members ({team.members.Count - rotatedPlayers.Count})",
+                ["name"] = $"Remaining Team Members ({remainingCount})",
                 ["value"] = string.IsNullOrEmpty(remainingPlayersText) ? "None" : remainingPlayersText,
-                ["inline"] = "false"
+                ["inline"] = false
             });
 
-            fields.Add(new Dictionary<string, string>
+            fields.Add(new Dictionary<string, object>
             {
                 ["name"] = "De-authorization Summary",
                 ["value"] = $"**TCs:** {tcCount}\n**Locks:** {lockCount}\n**Turrets:** {turretCount}\n**Bags/Beds:** {bagCount}",
-                ["inline"] = "false"
+                ["inline"] = false
             });
 
             SendDiscordWebhook(
@@ -339,29 +360,29 @@ namespace Oxide.Plugins
 
             _lastWebhookTime[cooldownKey] = DateTime.UtcNow;
 
-            var fields = new List<Dictionary<string, string>>
+            var fields = new List<Dictionary<string, object>>
             {
-                new Dictionary<string, string>
+                new Dictionary<string, object>
                 {
                     ["name"] = "Admin",
                     ["value"] = $"{admin.displayName} ({admin.UserIDString})",
-                    ["inline"] = "true"
+                    ["inline"] = true
                 },
-                new Dictionary<string, string>
+                new Dictionary<string, object>
                 {
                     ["name"] = "Command",
                     ["value"] = $"`{command}`",
-                    ["inline"] = "true"
+                    ["inline"] = true
                 }
             };
 
             if (!string.IsNullOrEmpty(targetPlayer))
             {
-                fields.Add(new Dictionary<string, string>
+                fields.Add(new Dictionary<string, object>
                 {
                     ["name"] = "Target Player",
                     ["value"] = $"{targetPlayer} ({targetId})",
-                    ["inline"] = "false"
+                    ["inline"] = false
                 });
             }
 
@@ -394,25 +415,25 @@ namespace Oxide.Plugins
 
             var teamLeaderName = covalence.Players.FindPlayerById(teamLeaderId.ToString())?.Name ?? teamLeaderId.ToString();
 
-            var fields = new List<Dictionary<string, string>>
+            var fields = new List<Dictionary<string, object>>
             {
-                new Dictionary<string, string>
+                new Dictionary<string, object>
                 {
                     ["name"] = "Banned Player",
                     ["value"] = $"{player.displayName} ({player.UserIDString})",
-                    ["inline"] = "false"
+                    ["inline"] = false
                 },
-                new Dictionary<string, string>
+                new Dictionary<string, object>
                 {
                     ["name"] = "Team Leader",
                     ["value"] = $"{teamLeaderName} ({teamLeaderId})",
-                    ["inline"] = "false"
+                    ["inline"] = false
                 },
-                new Dictionary<string, string>
+                new Dictionary<string, object>
                 {
                     ["name"] = "Attempt Type",
                     ["value"] = attemptType,
-                    ["inline"] = "false"
+                    ["inline"] = false
                 }
             };
 
@@ -440,15 +461,11 @@ namespace Oxide.Plugins
 
             _codeLockWhitelistField = typeof(CodeLock).GetField("whitelistPlayers", bindingFlags);
             _codeLockGuestlistField = typeof(CodeLock).GetField("guestPlayers", bindingFlags);
-            _keyLockCodeField = typeof(KeyLock).GetField("keyCode", bindingFlags);
-            _keyLockFirstKeyField = typeof(KeyLock).GetField("firstKeyCreated", bindingFlags);
 
             if (_config.DebugLogging)
             {
                 Puts($"CodeLock reflection - whitelistPlayers: {(_codeLockWhitelistField != null ? "Found" : "NOT FOUND")}");
                 Puts($"CodeLock reflection - guestPlayers: {(_codeLockGuestlistField != null ? "Found" : "NOT FOUND")}");
-                Puts($"KeyLock reflection - keyCode: {(_keyLockCodeField != null ? "Found" : "NOT FOUND")}");
-                Puts($"KeyLock reflection - firstKeyCreated: {(_keyLockFirstKeyField != null ? "Found" : "NOT FOUND")}");
             }
 
             timer.Every(300f, () => CleanupWebhookCooldowns());
@@ -507,7 +524,6 @@ namespace Oxide.Plugins
                 return;
             }
 
-            // Check permission
             if (_config.RequirePermission)
             {
                 bool hasPerm = permission.UserHasPermission(player.UserIDString, PermissionUse);
@@ -526,6 +542,7 @@ namespace Oxide.Plugins
                 Puts($"  - Creating UI button for {player.displayName}");
 
             var tc = entity as BuildingPrivlidge;
+            if (tc == null) return;
             CreateRotationUI(player, tc);
         }
 
@@ -610,6 +627,8 @@ namespace Oxide.Plugins
 
         private void CreateRotationUI(BasePlayer player, BuildingPrivlidge tc)
         {
+            CuiHelper.DestroyUi(player, UIMainName);
+
             var elements = new CuiElementContainer();
 
             elements.Add(new CuiButton
@@ -635,11 +654,23 @@ namespace Oxide.Plugins
             var player = arg.Player();
             if (player == null) return;
 
+            if (_config.RequirePermission && !permission.UserHasPermission(player.UserIDString, PermissionUse))
+            {
+                player.ChatMessage(lang.GetMessage("NoPermission", this, player.UserIDString));
+                return;
+            }
+
             if (arg.Args == null || arg.Args.Length < 1) return;
             if (!ulong.TryParse(arg.Args[0], out ulong netID)) return;
 
             var tc = BaseNetworkable.serverEntities.Find(new NetworkableId(netID)) as BuildingPrivlidge;
             if (tc == null || tc.IsDestroyed)
+            {
+                player.ChatMessage(lang.GetMessage("ProcessingError", this, player.UserIDString));
+                return;
+            }
+
+            if (Vector3.Distance(player.transform.position, tc.transform.position) > MaxRotateDistance)
             {
                 player.ChatMessage(lang.GetMessage("ProcessingError", this, player.UserIDString));
                 return;
@@ -947,7 +978,7 @@ namespace Oxide.Plugins
             }
             catch (Exception ex)
             {
-                PrintError($"Error in PerformRotation: {ex.Message}");
+                PrintError($"Error in PerformRotation: {ex}");
                 player.ChatMessage(lang.GetMessage("ProcessingError", this, player.UserIDString));
             }
             finally
@@ -1040,11 +1071,12 @@ namespace Oxide.Plugins
             {
                 try
                 {
+                    ulong previousOwnerId = keyLock.OwnerID;
                     keyLock.OwnerID = newOwnerId;
                     keyLock.SendNetworkUpdate();
 
                     if (_config.DebugLogging)
-                        Puts($"  - KeyLock: Changed owner from {keyLock.OwnerID} to {newOwnerId} (team leader)");
+                        Puts($"  - KeyLock: Changed owner from {previousOwnerId} to {newOwnerId} (team leader)");
 
                     return true;
                 }
